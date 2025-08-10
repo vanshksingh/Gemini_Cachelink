@@ -9,7 +9,7 @@ st.title("🎥 Gemini Video + Cache Manager")
 # --- API Key and Client Initialization ---
 st.sidebar.header("🔑 API Configuration")
 
-# Use session state to persistently store the API key
+# Use session state to persistently store the API key.
 if 'api_key' not in st.session_state:
     st.session_state.api_key = None
 
