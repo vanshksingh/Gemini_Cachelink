@@ -27,7 +27,13 @@ st.title("🎥 Gemini Video + Cache Manager")
 
 # --- Initialize Session State ---
 if 'api_key' not in st.session_state:
+    # On first run, load key from secrets or cookie
     st.session_state.api_key = None
+    try:
+        st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
+    except (FileNotFoundError, KeyError):
+        st.session_state.api_key = cookies.get(COOKIE_API_KEY)
+
 if 'page_index' not in st.session_state:
     # Restore page index from cookie or default to 0
     st.session_state.page_index = int(cookies.get(COOKIE_PAGE_INDEX, 0))
@@ -48,7 +54,6 @@ def linkify_timestamps(text, base_url):
             seconds = parts[0] * 60 + parts[1]
 
         timestamp_text = match.group(0)
-        # Ensure base_url doesn't have extra params
         clean_base_url = base_url.split('&')[0]
         url = f"{clean_base_url}&t={seconds}s"
         return f'[{timestamp_text}]({url})'
@@ -60,32 +65,25 @@ def linkify_timestamps(text, base_url):
 # --- API Key and Client Initialization ---
 st.sidebar.header("🔑 API Configuration")
 
-# New API Key Logic: Secrets -> Cookie -> User Input
-if not st.session_state.api_key:
-    try:
-        st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
-        st.sidebar.success("API Key loaded from secrets.", icon="✅")
-    except (FileNotFoundError, KeyError):
-        st.session_state.api_key = cookies.get(COOKIE_API_KEY)
-        if st.session_state.api_key:
-            st.sidebar.success("API Key loaded from browser cookie.", icon="🍪")
-        else:
-            st.sidebar.info("Please provide your API key below.")
 
-user_api_key_input = st.sidebar.text_input(
+def update_api_key():
+    """Callback to update session state and cookie when user enters a new key."""
+    st.session_state.api_key = st.session_state.api_key_input
+    cookies[COOKIE_API_KEY] = st.session_state.api_key
+
+
+st.sidebar.text_input(
     "Enter your Gemini API Key",
     type="password",
-    value=st.session_state.api_key or ""
+    key="api_key_input",
+    on_change=update_api_key,
+    value=st.session_state.api_key or "",
+    help="Your key is saved in a browser cookie and is not sent to any server other than Google's."
 )
-
-# If the user's input is different from what's in the state, update everything
-if user_api_key_input and user_api_key_input != st.session_state.api_key:
-    st.session_state.api_key = user_api_key_input
-    cookies[COOKIE_API_KEY] = user_api_key_input
-    st.rerun()
 
 if st.sidebar.button("Clear & Forget API Key"):
     st.session_state.api_key = None
+    st.session_state.api_key_input = ""  # Clear widget state
     if COOKIE_API_KEY in cookies:
         del cookies[COOKIE_API_KEY]
     st.rerun()
