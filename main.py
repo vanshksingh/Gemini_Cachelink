@@ -61,25 +61,20 @@ def linkify_timestamps(text, base_url):
 # --- API Key and Client Initialization ---
 st.sidebar.header("🔑 API Configuration")
 
-
-def api_key_on_change():
-    """Callback function to update state and cookie when the user types a new key."""
-    st.session_state.api_key = st.session_state.api_key_input_widget
-    cookies[COOKIE_API_KEY] = st.session_state.api_key
-
-
-st.sidebar.text_input(
+user_api_key_input = st.sidebar.text_input(
     "Enter your Gemini API Key",
     type="password",
-    key="api_key_input_widget",
-    on_change=api_key_on_change,
     value=st.session_state.api_key or ""
 )
 
+# If the user's input is different from what's in the state, update everything
+if user_api_key_input != st.session_state.api_key:
+    st.session_state.api_key = user_api_key_input
+    cookies[COOKIE_API_KEY] = user_api_key_input
+    st.rerun()
+
 if st.sidebar.button("Clear & Forget API Key"):
     st.session_state.api_key = None
-    # We need to manually clear the widget's state as well
-    st.session_state.api_key_input_widget = ""
     if COOKIE_API_KEY in cookies:
         del cookies[COOKIE_API_KEY]
     st.rerun()
