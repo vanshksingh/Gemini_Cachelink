@@ -13,6 +13,7 @@ import cache_utils as cu  # Import the refactored utility module
 
 # --- Constants ---
 COOKIE_API_KEY = "gemini_cache_api_key"
+COOKIE_PAGE_INDEX = "gemini_cache_page_index"
 PAGES = ["Upload File", "Create Cache", "Query Cache", "Manage Caches", "Manage Files"]
 
 # --- Cookie and Session State Initialization ---
@@ -26,9 +27,11 @@ st.title("🎥 Gemini Video + Cache Manager")
 
 # --- Initialize Session State ---
 if 'api_key' not in st.session_state:
-    st.session_state.api_key = None
+    # On first run, load key from cookie or default to None
+    st.session_state.api_key = cookies.get(COOKIE_API_KEY)
 if 'page_index' not in st.session_state:
-    st.session_state.page_index = 0
+    # Restore page index from cookie or default to 0
+    st.session_state.page_index = int(cookies.get(COOKIE_PAGE_INDEX, 0))
 if 'source_youtube_url' not in st.session_state:
     st.session_state.source_youtube_url = None
 
@@ -39,16 +42,18 @@ def linkify_timestamps(text, base_url):
 
     def replacer(match):
         parts = [int(p) for p in match.groups() if p is not None]
+        seconds = 0
         if len(parts) == 3:  # HH:MM:SS
             seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
-        else:  # MM:SS
+        elif len(parts) == 2:  # MM:SS
             seconds = parts[0] * 60 + parts[1]
 
         timestamp_text = match.group(0)
-        url = f"{base_url}&t={seconds}s"
+        # Ensure base_url doesn't have extra params
+        clean_base_url = base_url.split('&')[0]
+        url = f"{clean_base_url}&t={seconds}s"
         return f'[{timestamp_text}]({url})'
 
-    # Regex to find HH:MM:SS or MM:SS patterns
     timestamp_pattern = re.compile(r'(?:(\d{1,2}):)?(\d{1,2}):(\d{2})')
     return timestamp_pattern.sub(replacer, text)
 
@@ -56,23 +61,25 @@ def linkify_timestamps(text, base_url):
 # --- API Key and Client Initialization ---
 st.sidebar.header("🔑 API Configuration")
 
-# Try to load from cookies only if the key isn't already in the session state
-if not st.session_state.api_key:
-    st.session_state.api_key = cookies.get(COOKIE_API_KEY)
 
-user_api_key_input = st.sidebar.text_input(
+def api_key_on_change():
+    """Callback function to update state and cookie when the user types a new key."""
+    st.session_state.api_key = st.session_state.api_key_input_widget
+    cookies[COOKIE_API_KEY] = st.session_state.api_key
+
+
+st.sidebar.text_input(
     "Enter your Gemini API Key",
     type="password",
+    key="api_key_input_widget",
+    on_change=api_key_on_change,
     value=st.session_state.api_key or ""
 )
 
-if user_api_key_input != st.session_state.api_key:
-    st.session_state.api_key = user_api_key_input
-    cookies[COOKIE_API_KEY] = user_api_key_input  # Set cookie
-    st.rerun()
-
 if st.sidebar.button("Clear & Forget API Key"):
     st.session_state.api_key = None
+    # We need to manually clear the widget's state as well
+    st.session_state.api_key_input_widget = ""
     if COOKIE_API_KEY in cookies:
         del cookies[COOKIE_API_KEY]
     st.rerun()
@@ -102,7 +109,6 @@ def cached_list_caches():
 # --- Main UI ---
 st.sidebar.divider()
 st.sidebar.header("⚙️ Model Selection")
-# Add a model selector in the sidebar
 model_id = st.sidebar.selectbox(
     "Choose a Gemini Model",
     ("models/gemini-1.5-pro-latest", "models/gemini-1.5-flash-latest"),
@@ -115,10 +121,12 @@ nav_cols = st.columns([1, 8, 1])
 with nav_cols[0]:
     if st.button("⬅️ Back", use_container_width=True, disabled=(st.session_state.page_index == 0)):
         st.session_state.page_index -= 1
+        cookies[COOKIE_PAGE_INDEX] = str(st.session_state.page_index)
         st.rerun()
 with nav_cols[2]:
     if st.button("Next ➡️", use_container_width=True, disabled=(st.session_state.page_index == len(PAGES) - 1)):
         st.session_state.page_index += 1
+        cookies[COOKIE_PAGE_INDEX] = str(st.session_state.page_index)
         st.rerun()
 st.divider()
 
@@ -132,7 +140,6 @@ if action == "Upload File":
 
     if st.button("Process File"):
         path_to_upload = None
-        # Reset youtube url state
         st.session_state.source_youtube_url = None
 
         if file_upload:
@@ -144,11 +151,10 @@ if action == "Upload File":
             st.info(f"Processing uploaded file: {file_upload.name}")
         elif url_input:
             if "youtube.com" in url_input or "youtu.be" in url_input:
-                # Store the base URL for timestamp linking
-                st.session_state.source_youtube_url = url_input.split('&')[0]
+                st.session_state.source_youtube_url = url_input
 
             temp_dir = pathlib.Path("./temp_downloads")
-            file_name = url_input.split('/')[-1]
+            file_name = url_input.split('/')[-1].split('?')[0]
             path_to_upload = cu.download_file(url_input, temp_dir / file_name)
             st.info(f"Processing downloaded file: {file_name}")
 
@@ -214,63 +220,82 @@ elif action == "Query Cache":
                 try:
                     selected_cache_obj = cache_map[selected_cache_display]
                     response = cu.generate_from_cache(model_id, selected_cache_obj.name, prompt)
-                    st.session_state['last_query_response'] = response.text
+                    st.session_state['last_query_response'] = response
                 except Exception as e:
                     st.error(f"Failed to query cache: {e}")
                     st.session_state['last_query_response'] = None
 
         if st.session_state.get('last_query_response'):
-            st.subheader("📝 Response")
-            response_text = st.session_state['last_query_response']
+            response = st.session_state['last_query_response']
+            response_text = response.text
 
-            # Linkify timestamps if the source was a YouTube video
+            st.subheader("📝 Response")
             if st.session_state.get('source_youtube_url'):
                 response_text = linkify_timestamps(response_text, st.session_state.source_youtube_url)
 
             st.markdown(response_text, unsafe_allow_html=True)
             st.download_button(
                 label="⬇️ Download Full Response",
-                data=st.session_state['last_query_response'],  # Download the raw text
+                data=response.text,
                 file_name="cache_query_response.txt",
                 mime="text/plain"
             )
 
+            st.subheader("📈 Usage Metadata")
+            st.json({
+                "Cached Content Token Count": response.usage_metadata.cached_token_count,
+                "Total Token Count": response.usage_metadata.total_token_count
+            })
+
 elif action == "Manage Caches":
     st.header("🗂️ Step 4: Manage Caches")
-    if st.button("Refresh Cache List"):
-        cached_list_caches.clear()
-        st.rerun()
+    search_term_cache = st.text_input("Search caches by display name:")
+
     caches = cached_list_caches()
     if not caches:
         st.info("No caches available.")
-    for c in caches:
-        with st.container(border=True):
-            st.write(f"**Display Name:** {c.display_name}")
-            st.code(f"ID: {c.name}", language=None)
-            st.write(f"**Created:** {c.create_time.strftime('%Y-%m-%d %H:%M')}")
-            st.write(f"**Expires:** {c.expire_time.strftime('%Y-%m-%d %H:%M')}")
-            if st.button(f"Delete Cache '{c.display_name}'", key=c.name):
-                cu.delete_cache(c.name)
-                st.success(f"Deleted cache {c.display_name}")
-                cached_list_caches.clear()
-                st.rerun()
+    else:
+        filtered_caches = [c for c in caches if search_term_cache.lower() in c.display_name.lower()]
+        if not filtered_caches:
+            st.warning("No caches match your search.")
+
+        for c in filtered_caches:
+            with st.container(border=True):
+                st.write(f"**Display Name:** {c.display_name}")
+                st.code(f"ID: {c.name}", language=None)
+                st.write(f"**Created:** {c.create_time.strftime('%Y-%m-%d %H:%M')}")
+                st.write(f"**Expires:** {c.expire_time.strftime('%Y-%m-%d %H:%M')}")
+
+                confirm_delete = st.checkbox(f"Confirm deletion of '{c.display_name}'", key=f"del_confirm_{c.name}")
+                if st.button(f"Delete Cache", key=c.name, disabled=not confirm_delete):
+                    cu.delete_cache(c.name)
+                    st.success(f"Deleted cache {c.display_name}")
+                    cached_list_caches.clear()
+                    st.rerun()
 
 elif action == "Manage Files":
     st.header("📂 Step 5: Manage Files")
-    if st.button("Refresh File List"):
-        cached_list_files.clear()
-        st.rerun()
+    search_term_file = st.text_input("Search files by display name:")
+
     files = cached_list_files()
     if not files:
         st.info("No files uploaded.")
-    for f in files:
-        with st.container(border=True):
-            st.write(f"**Display Name:** {f.display_name}")
-            st.code(f"ID: {f.name}", language=None)
-            st.code(f"URI: {f.uri}", language=None)
-            st.write(f"**Created:** {f.create_time.strftime('%Y-%m-%d %H:%M')}")
-            if st.button(f"Delete File '{f.display_name}'", key=f.name):
-                cu.delete_file(f.name)
-                st.success(f"Deleted file {f.display_name}")
-                cached_list_files.clear()
-                st.rerun()
+    else:
+        filtered_files = [f for f in files if search_term_file.lower() in f.display_name.lower()]
+        if not filtered_files:
+            st.warning("No files match your search.")
+
+        for f in filtered_files:
+            with st.container(border=True):
+                st.write(f"**Display Name:** {f.display_name}")
+                st.code(f"ID: {f.name}", language=None)
+                st.code(f"URI: {f.uri}", language=None)
+                st.write(f"**Created:** {f.create_time.strftime('%Y-%m-%d %H:%M')}")
+
+                confirm_delete_file = st.checkbox(f"Confirm deletion of '{f.display_name}'",
+                                                  key=f"del_confirm_{f.name}")
+                if st.button(f"Delete File", key=f.name, disabled=not confirm_delete_file):
+                    cu.delete_file(f.name)
+                    st.success(f"Deleted file {f.display_name}")
+                    cached_list_files.clear()
+                    st.rerun()
