@@ -1,39 +1,58 @@
-# main.py
 import streamlit as st
 import pathlib
+import datetime
+
+# --- Page and State Configuration ---
+# This MUST be the first Streamlit command in your script.
+st.set_page_config(page_title="Gemini Cache Manager", layout="wide")
+
+# Import third-party and local modules AFTER page config
+import streamlit_cookies_manager
 import cache_utils as cu  # Import the refactored utility module
 
-st.set_page_config(page_title="Gemini Cache Manager", layout="wide")
+# --- Constants ---
+COOKIE_API_KEY = "gemini_cache_api_key"
+PAGES = ["Upload File", "Create Cache", "Query Cache", "Manage Caches", "Manage Files"]
+
+# --- Cookie and Session State Initialization ---
+cookies = streamlit_cookies_manager.CookieManager()
+if not cookies.ready():
+    # Wait for the frontend to send cookies to the backend.
+    st.spinner()
+    st.stop()
+
 st.title("🎥 Gemini Video + Cache Manager")
+
+# --- Initialize Session State ---
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = None
+if 'page_index' not in st.session_state:
+    st.session_state.page_index = 0
 
 # --- API Key and Client Initialization ---
 st.sidebar.header("🔑 API Configuration")
 
-# Use session state to persistently store the API key.
-if 'api_key' not in st.session_state:
-    st.session_state.api_key = None
-
-# Try to load from secrets only if the key isn't already in the session state
+# Try to load from cookies only if the key isn't already in the session state
 if not st.session_state.api_key:
-    try:
-        st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
-        st.sidebar.success("API Key loaded from secrets.", icon="✅")
-    except (FileNotFoundError, KeyError):
-        st.sidebar.info("No API Key found in secrets. Please provide one below.")
+    st.session_state.api_key = cookies.get(COOKIE_API_KEY)
 
-# Get API key from user input, using the session state value as the default
 user_api_key_input = st.sidebar.text_input(
     "Enter your Gemini API Key",
     type="password",
     value=st.session_state.api_key or ""
 )
 
-# If the user input differs from the session state, update it and rerun
 if user_api_key_input != st.session_state.api_key:
     st.session_state.api_key = user_api_key_input
+    cookies[COOKIE_API_KEY] = user_api_key_input # Set cookie
     st.rerun()
 
-# On every script run, initialize the client if an API key is available
+if st.sidebar.button("Clear & Forget API Key"):
+    st.session_state.api_key = None
+    if COOKIE_API_KEY in cookies:
+        del cookies[COOKIE_API_KEY]
+    st.rerun()
+
 if st.session_state.api_key:
     try:
         cu.initialize_client(st.session_state.api_key)
@@ -50,27 +69,28 @@ else:
 def cached_list_files():
     return cu.list_files()
 
-
 @st.cache_data(ttl=60)
 def cached_list_caches():
     return cu.list_caches()
 
 
 # --- Main UI ---
-# Use a model that is known to be compatible with the Caching API
-model_id = "models/gemini-2.5-flash"
-
 st.sidebar.divider()
-st.sidebar.header("Actions")
-action = st.sidebar.radio(
-    "Choose an action:",
-    ["Upload File", "Create Cache", "Query Cache", "Manage Caches", "Manage Files"]
+st.sidebar.header("⚙️ Model Selection")
+# Add a model selector in the sidebar
+model_id = st.sidebar.selectbox(
+    "Choose a Gemini Model",
+    ("models/gemini-1.5-pro-latest", "models/gemini-1.5-flash-latest"),
+    help="Select a model compatible with the Caching API."
 )
 
-# --- Action Handlers ---
+
+# --- Page Content ---
+action = PAGES[st.session_state.page_index]
+
 if action == "Upload File":
-    st.header("📤 Upload or Download File")
-    file_upload = st.file_uploader("Upload a file", type=["mp4", "mp3", "pdf", "jpg", "png"])
+    st.header("📤 Step 1: Upload or Download File")
+    file_upload = st.file_uploader("Upload a file from your device", type=["mp4", "mp3", "pdf", "jpg", "png"])
     url_input = st.text_input("Or enter a file URL to download and upload")
 
     if st.button("Process File"):
@@ -93,36 +113,34 @@ if action == "Upload File":
                 try:
                     file_obj = cu.upload_file(path_to_upload)
                     st.success(f"File processed successfully! URI: {file_obj.uri}")
-                    cached_list_files.clear()  # Clear cache to show new file
+                    cached_list_files.clear()
                 except Exception as e:
                     st.error(f"Failed to process file: {e}")
         else:
             st.warning("Please upload a file or provide a URL.")
 
 elif action == "Create Cache":
-    st.header("💾 Create Explicit Cache")
-
+    st.header("💾 Step 2: Create Explicit Cache")
     cache_content_source = st.radio("Cache Content Source:", ("From Uploaded File", "From Text Input"), horizontal=True)
-
     content_to_cache = None
 
     if cache_content_source == "From Uploaded File":
         files = cached_list_files()
         if not files:
-            st.warning("No files found. Please upload a file first.")
+            st.warning("No files found. Please go back to Step 1 to upload a file.")
         else:
             file_map = {f"{f.display_name} ({f.name})": f for f in files}
             selected_file_display = st.selectbox("Select File to Cache", list(file_map.keys()))
             if selected_file_display:
                 content_to_cache = [file_map[selected_file_display]]
-    else:  # From Text Input
+    else:
         text_content = st.text_area("Enter text content to cache:", height=200)
         if text_content:
             content_to_cache = [text_content]
 
     if content_to_cache:
-        sys_inst = st.text_area("System Instruction",
-                                "You are an expert content analyzer. Answer queries based on the provided content.")
+        # Updated system instruction to ask for timestamps
+        sys_inst = st.text_area("System Instruction", "You are an expert video analyzer. When answering questions, provide timestamps from the video to support your answer.")
         ttl = st.number_input("Cache TTL (seconds)", min_value=60, value=3600)
         display_name = st.text_input("Cache Display Name", "my-new-cache")
 
@@ -131,46 +149,49 @@ elif action == "Create Cache":
                 try:
                     cache = cu.create_explicit_cache(model_id, content_to_cache, sys_inst, ttl, display_name)
                     st.success(f"Cache '{display_name}' created successfully! Name: {cache.name}")
-                    cached_list_caches.clear()  # Clear cache to show new cache
+                    cached_list_caches.clear()
                 except Exception as e:
                     st.error(f"Failed to create cache: {e}")
     else:
         st.info("Please select or enter content to be cached.")
 
-
 elif action == "Query Cache":
-    st.header("❓ Query an Existing Cache")
+    st.header("❓ Step 3: Query an Existing Cache")
     caches = cached_list_caches()
     if not caches:
-        st.warning("No caches found. Please create a cache first.")
+        st.warning("No caches found. Please go back to Step 2 to create a cache.")
     else:
         cache_map = {f"{c.display_name} ({c.name})": c for c in caches}
         selected_cache_display = st.selectbox("Select Cache to Use", list(cache_map.keys()))
-        prompt = st.text_area("Enter Your Prompt", "Summarize the content in three bullet points.")
+        # Updated prompt to ask for timestamps
+        prompt = st.text_area("Enter Your Prompt", "Summarize the video. Include timestamps for key events.")
 
         if st.button("Run Query"):
             with st.spinner("Generating response from cache..."):
                 try:
                     selected_cache_obj = cache_map[selected_cache_display]
                     response = cu.generate_from_cache(model_id, selected_cache_obj.name, prompt)
-                    st.session_state['last_query_response'] = response.text  # Store response for download
+                    st.session_state['last_query_response'] = response.text
                 except Exception as e:
                     st.error(f"Failed to query cache: {e}")
                     st.session_state['last_query_response'] = None
 
-        if 'last_query_response' in st.session_state and st.session_state['last_query_response']:
+        if st.session_state.get('last_query_response'):
             st.subheader("📝 Response")
             response_text = st.session_state['last_query_response']
             st.markdown(response_text)
             st.download_button(
-                label="⬇️ Download Response",
+                label="⬇️ Download Full Response",
                 data=response_text,
                 file_name="cache_query_response.txt",
                 mime="text/plain"
             )
 
 elif action == "Manage Caches":
-    st.header("🗂️ Manage Caches")
+    st.header("🗂️ Step 4: Manage Caches")
+    if st.button("Refresh Cache List"):
+        cached_list_caches.clear()
+        st.rerun()
     caches = cached_list_caches()
     if not caches:
         st.info("No caches available.")
@@ -187,7 +208,10 @@ elif action == "Manage Caches":
                 st.rerun()
 
 elif action == "Manage Files":
-    st.header("📂 Manage Files")
+    st.header("📂 Step 5: Manage Files")
+    if st.button("Refresh File List"):
+        cached_list_files.clear()
+        st.rerun()
     files = cached_list_files()
     if not files:
         st.info("No files uploaded.")
@@ -202,3 +226,33 @@ elif action == "Manage Files":
                 st.success(f"Deleted file {f.display_name}")
                 cached_list_files.clear()
                 st.rerun()
+
+# --- Sticky Footer for Navigation ---
+st.markdown("""
+<style>
+    .fixed-bottom {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background-color: white;
+        padding: 1rem 1rem;
+        border-top: 1px solid #e0e0e0;
+        z-index: 99;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="fixed-bottom">', unsafe_allow_html=True)
+nav_cols = st.columns([1, 8, 1])
+with nav_cols[0]:
+    if st.button("⬅️ Back", use_container_width=True, disabled=(st.session_state.page_index == 0)):
+        st.session_state.page_index -= 1
+        st.rerun()
+with nav_cols[1]:
+    st.write(f"<div style='text-align: center; font-weight: bold;'>Step {st.session_state.page_index + 1} of {len(PAGES)}: {PAGES[st.session_state.page_index]}</div>", unsafe_allow_html=True)
+with nav_cols[2]:
+    if st.button("Next ➡️", use_container_width=True, disabled=(st.session_state.page_index == len(PAGES) - 1)):
+        st.session_state.page_index += 1
+        st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
