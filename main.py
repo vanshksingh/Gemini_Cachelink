@@ -27,8 +27,7 @@ st.title("🎥 Gemini Video + Cache Manager")
 
 # --- Initialize Session State ---
 if 'api_key' not in st.session_state:
-    # On first run, load key from cookie or default to None
-    st.session_state.api_key = cookies.get(COOKIE_API_KEY)
+    st.session_state.api_key = None
 if 'page_index' not in st.session_state:
     # Restore page index from cookie or default to 0
     st.session_state.page_index = int(cookies.get(COOKIE_PAGE_INDEX, 0))
@@ -61,6 +60,18 @@ def linkify_timestamps(text, base_url):
 # --- API Key and Client Initialization ---
 st.sidebar.header("🔑 API Configuration")
 
+# New API Key Logic: Secrets -> Cookie -> User Input
+if not st.session_state.api_key:
+    try:
+        st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
+        st.sidebar.success("API Key loaded from secrets.", icon="✅")
+    except (FileNotFoundError, KeyError):
+        st.session_state.api_key = cookies.get(COOKIE_API_KEY)
+        if st.session_state.api_key:
+            st.sidebar.success("API Key loaded from browser cookie.", icon="🍪")
+        else:
+            st.sidebar.info("Please provide your API key below.")
+
 user_api_key_input = st.sidebar.text_input(
     "Enter your Gemini API Key",
     type="password",
@@ -68,7 +79,7 @@ user_api_key_input = st.sidebar.text_input(
 )
 
 # If the user's input is different from what's in the state, update everything
-if user_api_key_input != st.session_state.api_key:
+if user_api_key_input and user_api_key_input != st.session_state.api_key:
     st.session_state.api_key = user_api_key_input
     cookies[COOKIE_API_KEY] = user_api_key_input
     st.rerun()
