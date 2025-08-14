@@ -1,6 +1,7 @@
 import streamlit as st
 import pathlib
 import datetime
+import re
 
 # --- Page and State Configuration ---
 # This MUST be the first Streamlit command in your script.
@@ -28,6 +29,29 @@ if 'api_key' not in st.session_state:
     st.session_state.api_key = None
 if 'page_index' not in st.session_state:
     st.session_state.page_index = 0
+if 'source_youtube_url' not in st.session_state:
+    st.session_state.source_youtube_url = None
+
+
+# --- Helper Functions ---
+def linkify_timestamps(text, base_url):
+    """Finds timestamps (MM:SS or HH:MM:SS) and converts them to clickable YouTube links."""
+
+    def replacer(match):
+        parts = [int(p) for p in match.groups() if p is not None]
+        if len(parts) == 3:  # HH:MM:SS
+            seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
+        else:  # MM:SS
+            seconds = parts[0] * 60 + parts[1]
+
+        timestamp_text = match.group(0)
+        url = f"{base_url}&t={seconds}s"
+        return f'[{timestamp_text}]({url})'
+
+    # Regex to find HH:MM:SS or MM:SS patterns
+    timestamp_pattern = re.compile(r'(?:(\d{1,2}):)?(\d{1,2}):(\d{2})')
+    return timestamp_pattern.sub(replacer, text)
+
 
 # --- API Key and Client Initialization ---
 st.sidebar.header("🔑 API Configuration")
@@ -44,7 +68,7 @@ user_api_key_input = st.sidebar.text_input(
 
 if user_api_key_input != st.session_state.api_key:
     st.session_state.api_key = user_api_key_input
-    cookies[COOKIE_API_KEY] = user_api_key_input # Set cookie
+    cookies[COOKIE_API_KEY] = user_api_key_input  # Set cookie
     st.rerun()
 
 if st.sidebar.button("Clear & Forget API Key"):
@@ -69,6 +93,7 @@ else:
 def cached_list_files():
     return cu.list_files()
 
+
 @st.cache_data(ttl=60)
 def cached_list_caches():
     return cu.list_caches()
@@ -84,6 +109,18 @@ model_id = st.sidebar.selectbox(
     help="Select a model compatible with the Caching API."
 )
 
+# --- Navigation ---
+st.write(f"### **Step {st.session_state.page_index + 1}/{len(PAGES)}: {PAGES[st.session_state.page_index]}**")
+nav_cols = st.columns([1, 8, 1])
+with nav_cols[0]:
+    if st.button("⬅️ Back", use_container_width=True, disabled=(st.session_state.page_index == 0)):
+        st.session_state.page_index -= 1
+        st.rerun()
+with nav_cols[2]:
+    if st.button("Next ➡️", use_container_width=True, disabled=(st.session_state.page_index == len(PAGES) - 1)):
+        st.session_state.page_index += 1
+        st.rerun()
+st.divider()
 
 # --- Page Content ---
 action = PAGES[st.session_state.page_index]
@@ -95,6 +132,9 @@ if action == "Upload File":
 
     if st.button("Process File"):
         path_to_upload = None
+        # Reset youtube url state
+        st.session_state.source_youtube_url = None
+
         if file_upload:
             temp_dir = pathlib.Path("./temp_uploads")
             temp_dir.mkdir(exist_ok=True)
@@ -103,6 +143,10 @@ if action == "Upload File":
                 f.write(file_upload.getbuffer())
             st.info(f"Processing uploaded file: {file_upload.name}")
         elif url_input:
+            if "youtube.com" in url_input or "youtu.be" in url_input:
+                # Store the base URL for timestamp linking
+                st.session_state.source_youtube_url = url_input.split('&')[0]
+
             temp_dir = pathlib.Path("./temp_downloads")
             file_name = url_input.split('/')[-1]
             path_to_upload = cu.download_file(url_input, temp_dir / file_name)
@@ -139,8 +183,8 @@ elif action == "Create Cache":
             content_to_cache = [text_content]
 
     if content_to_cache:
-        # Updated system instruction to ask for timestamps
-        sys_inst = st.text_area("System Instruction", "You are an expert video analyzer. When answering questions, provide timestamps from the video to support your answer.")
+        sys_inst = st.text_area("System Instruction",
+                                "You are an expert video analyzer. When answering questions, provide timestamps from the video to support your answer.")
         ttl = st.number_input("Cache TTL (seconds)", min_value=60, value=3600)
         display_name = st.text_input("Cache Display Name", "my-new-cache")
 
@@ -163,7 +207,6 @@ elif action == "Query Cache":
     else:
         cache_map = {f"{c.display_name} ({c.name})": c for c in caches}
         selected_cache_display = st.selectbox("Select Cache to Use", list(cache_map.keys()))
-        # Updated prompt to ask for timestamps
         prompt = st.text_area("Enter Your Prompt", "Summarize the video. Include timestamps for key events.")
 
         if st.button("Run Query"):
@@ -179,10 +222,15 @@ elif action == "Query Cache":
         if st.session_state.get('last_query_response'):
             st.subheader("📝 Response")
             response_text = st.session_state['last_query_response']
-            st.markdown(response_text)
+
+            # Linkify timestamps if the source was a YouTube video
+            if st.session_state.get('source_youtube_url'):
+                response_text = linkify_timestamps(response_text, st.session_state.source_youtube_url)
+
+            st.markdown(response_text, unsafe_allow_html=True)
             st.download_button(
                 label="⬇️ Download Full Response",
-                data=response_text,
+                data=st.session_state['last_query_response'],  # Download the raw text
                 file_name="cache_query_response.txt",
                 mime="text/plain"
             )
@@ -226,33 +274,3 @@ elif action == "Manage Files":
                 st.success(f"Deleted file {f.display_name}")
                 cached_list_files.clear()
                 st.rerun()
-
-# --- Sticky Footer for Navigation ---
-st.markdown("""
-<style>
-    .fixed-bottom {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        width: 100%;
-        background-color: white;
-        padding: 1rem 1rem;
-        border-top: 1px solid #e0e0e0;
-        z-index: 99;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown('<div class="fixed-bottom">', unsafe_allow_html=True)
-nav_cols = st.columns([1, 8, 1])
-with nav_cols[0]:
-    if st.button("⬅️ Back", use_container_width=True, disabled=(st.session_state.page_index == 0)):
-        st.session_state.page_index -= 1
-        st.rerun()
-with nav_cols[1]:
-    st.write(f"<div style='text-align: center; font-weight: bold;'>Step {st.session_state.page_index + 1} of {len(PAGES)}: {PAGES[st.session_state.page_index]}</div>", unsafe_allow_html=True)
-with nav_cols[2]:
-    if st.button("Next ➡️", use_container_width=True, disabled=(st.session_state.page_index == len(PAGES) - 1)):
-        st.session_state.page_index += 1
-        st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
