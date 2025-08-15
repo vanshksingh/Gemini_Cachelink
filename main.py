@@ -2,6 +2,7 @@ import streamlit as st
 import pathlib
 import datetime
 import re
+import time
 
 # --- Page and State Configuration ---
 # This MUST be the first Streamlit command in your script.
@@ -9,68 +10,77 @@ st.set_page_config(page_title="Gemini Cache Manager", layout="wide")
 
 # Import third-party and local modules AFTER page config
 import streamlit_cookies_manager
-import cache_utils as cu  # Import the refactored utility module
+import cache_utils as cu  # Assumes your utility functions are in this file
 
 # --- Constants ---
 COOKIE_API_KEY = "gemini_cache_api_key"
 COOKIE_PAGE_INDEX = "gemini_cache_page_index"
 PAGES = ["Upload File", "Create Cache", "Query Cache", "Manage Caches", "Manage Files"]
 
-# --- Cookie and Session State Initialization ---
+# --- Cookie Manager Initialization ---
 cookies = streamlit_cookies_manager.CookieManager()
-if not cookies.ready():
-    # Wait for the frontend to send cookies to the backend.
-    st.spinner()
-    st.stop()
+cookies_ready = cookies.ready()
 
 st.title("🎥 Gemini Video + Cache Manager")
 
-# --- Initialize Session State ---
-if 'api_key' not in st.session_state:
-    # On first run, load key from secrets or cookie
-    st.session_state.api_key = None
-    try:
-        st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
-    except (FileNotFoundError, KeyError):
-        st.session_state.api_key = cookies.get(COOKIE_API_KEY)
 
-if 'page_index' not in st.session_state:
-    # Restore page index from cookie or default to 0
-    st.session_state.page_index = int(cookies.get(COOKIE_PAGE_INDEX, 0))
-if 'source_youtube_url' not in st.session_state:
-    st.session_state.source_youtube_url = None
+# --- Initialize Session State (Centralized) ---
+def initialize_session_state():
+    """A centralized function to set up the initial session state."""
+    if 'page_index' not in st.session_state:
+        if cookies_ready:
+            st.session_state.page_index = int(cookies.get(COOKIE_PAGE_INDEX, 0))
+        else:
+            st.session_state.page_index = 0
+
+    if 'api_key_source' not in st.session_state:
+        st.session_state.api_key = None
+        st.session_state.api_key_source = "none"  # Default value
+        try:
+            # 1. Attempt to load from secrets
+            st.session_state.api_key = st.secrets["GEMINI_API_KEY"]
+            st.session_state.api_key_source = "secrets"
+            return  # Exit after successful load from secrets
+        except (FileNotFoundError, KeyError):
+            # 2. If secrets fail, attempt to load from cookies
+            pass
+
+        # Silently try to get the cookie if the manager is ready
+        if cookies_ready:
+            cookie_key = cookies.get(COOKIE_API_KEY)
+            if cookie_key:
+                st.session_state.api_key = cookie_key
+                st.session_state.api_key_source = "cookie"
+
+    if 'source_youtube_url' not in st.session_state:
+        st.session_state.source_youtube_url = None
 
 
-# --- Helper Functions ---
-def linkify_timestamps(text, base_url):
-    """Finds timestamps (MM:SS or HH:MM:SS) and converts them to clickable YouTube links."""
-
-    def replacer(match):
-        parts = [int(p) for p in match.groups() if p is not None]
-        seconds = 0
-        if len(parts) == 3:  # HH:MM:SS
-            seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
-        elif len(parts) == 2:  # MM:SS
-            seconds = parts[0] * 60 + parts[1]
-
-        timestamp_text = match.group(0)
-        clean_base_url = base_url.split('&')[0]
-        url = f"{clean_base_url}&t={seconds}s"
-        return f'[{timestamp_text}]({url})'
-
-    timestamp_pattern = re.compile(r'(?:(\d{1,2}):)?(\d{1,2}):(\d{2})')
-    return timestamp_pattern.sub(replacer, text)
-
+# Run the initialization
+initialize_session_state()
 
 # --- API Key and Client Initialization ---
 st.sidebar.header("🔑 API Configuration")
 
 
 def update_api_key():
-    """Callback to update session state and cookie when user enters a new key."""
-    st.session_state.api_key = st.session_state.api_key_input
-    cookies[COOKIE_API_KEY] = st.session_state.api_key
+    """Callback to update session state and silently attempt to save to cookie."""
+    new_key = st.session_state.api_key_input
+    st.session_state.api_key = new_key
+    st.session_state.api_key_source = "user_input"
+    if cookies_ready:
+        try:
+            cookies[COOKIE_API_KEY] = new_key
+        except Exception:
+            # Fail silently if cookie can't be set
+            pass
 
+
+# Display status and input for API Key
+if st.session_state.api_key_source == "secrets":
+    st.sidebar.success("✅ API Key loaded from st.secrets.")
+elif not st.session_state.api_key:
+    st.sidebar.info("Enter your API key to begin.")
 
 st.sidebar.text_input(
     "Enter your Gemini API Key",
@@ -78,14 +88,19 @@ st.sidebar.text_input(
     key="api_key_input",
     on_change=update_api_key,
     value=st.session_state.api_key or "",
-    help="Your key is saved in a browser cookie and is not sent to any server other than Google's."
+    help="Your key is saved in a browser cookie if your browser allows it."
 )
 
 if st.sidebar.button("Clear & Forget API Key"):
     st.session_state.api_key = None
-    st.session_state.api_key_input = ""  # Clear widget state
-    if COOKIE_API_KEY in cookies:
-        del cookies[COOKIE_API_KEY]
+    st.session_state.api_key_source = "none"
+    st.session_state.api_key_input = ""
+    if cookies_ready and COOKIE_API_KEY in cookies:
+        try:
+            del cookies[COOKIE_API_KEY]
+        except Exception:
+            # Fail silently
+            pass
     st.rerun()
 
 if st.session_state.api_key:
@@ -125,12 +140,14 @@ nav_cols = st.columns([1, 8, 1])
 with nav_cols[0]:
     if st.button("⬅️ Back", use_container_width=True, disabled=(st.session_state.page_index == 0)):
         st.session_state.page_index -= 1
-        cookies[COOKIE_PAGE_INDEX] = str(st.session_state.page_index)
+        if cookies_ready:
+            cookies[COOKIE_PAGE_INDEX] = str(st.session_state.page_index)
         st.rerun()
 with nav_cols[2]:
     if st.button("Next ➡️", use_container_width=True, disabled=(st.session_state.page_index == len(PAGES) - 1)):
         st.session_state.page_index += 1
-        cookies[COOKIE_PAGE_INDEX] = str(st.session_state.page_index)
+        if cookies_ready:
+            cookies[COOKIE_PAGE_INDEX] = str(st.session_state.page_index)
         st.rerun()
 st.divider()
 
@@ -140,10 +157,11 @@ action = PAGES[st.session_state.page_index]
 if action == "Upload File":
     st.header("📤 Step 1: Upload or Download File")
     file_upload = st.file_uploader("Upload a file from your device", type=["mp4", "mp3", "pdf", "jpg", "png"])
-    url_input = st.text_input("Or enter a file URL to download and upload")
+    url_input = st.text_input("Or enter a file URL (e.g., YouTube) to download and upload")
 
     if st.button("Process File"):
         path_to_upload = None
+        # Reset youtube url state before processing a new file
         st.session_state.source_youtube_url = None
 
         if file_upload:
@@ -193,8 +211,30 @@ elif action == "Create Cache":
             content_to_cache = [text_content]
 
     if content_to_cache:
-        sys_inst = st.text_area("System Instruction",
-                                "You are an expert video analyzer. When answering questions, provide timestamps from the video to support your answer.")
+        # --- DYNAMIC SYSTEM INSTRUCTION ---
+        # Default instruction for general files
+        system_instruction_template = "You are an expert content analyzer. When answering questions about the provided file, be precise, thorough, and helpful."
+
+        # If a YouTube URL was processed, create a specific instruction for timestamp linking
+        if st.session_state.get('source_youtube_url'):
+            clean_base_url = st.session_state.source_youtube_url.split('&')[0]
+            system_instruction_template = (
+                "You are an expert video analyzer.\n"
+                f"The user has provided a video from the URL: {clean_base_url}\n\n"
+                "When you identify a key moment in the video, you MUST embed a clickable timestamp in your response.\n"
+                "To do this, you will format the timestamp as a Markdown link like this: `[MM:SS](URL&t=XXs)` where `XX` is the total number of seconds from the start.\n\n"
+                "**CRITICAL:** For example, a timestamp at 1 minute and 23 seconds (83 seconds total) must be written as `[01:23]({clean_base_url}&t=83s)`.\n"
+                "A timestamp at 12 minutes and 5 seconds (725 seconds total) must be written as `[12:05]({clean_base_url}&t=725s)`.\n\n"
+                "Your primary goal is to answer the user's question while providing these precise, clickable timestamps as evidence from the video."
+            )
+
+        sys_inst = st.text_area(
+            "System Instruction (auto-generated for YouTube URLs)",
+            system_instruction_template,
+            height=250
+        )
+        # --- END DYNAMIC INSTRUCTION ---
+
         ttl = st.number_input("Cache TTL (seconds)", min_value=60, value=3600)
         display_name = st.text_input("Cache Display Name", "my-new-cache")
 
@@ -219,6 +259,9 @@ elif action == "Query Cache":
         selected_cache_display = st.selectbox("Select Cache to Use", list(cache_map.keys()))
         prompt = st.text_area("Enter Your Prompt", "Summarize the video. Include timestamps for key events.")
 
+        if 'last_query_response' not in st.session_state:
+            st.session_state['last_query_response'] = None
+
         if st.button("Run Query"):
             with st.spinner("Generating response from cache..."):
                 try:
@@ -234,10 +277,9 @@ elif action == "Query Cache":
             response_text = response.text
 
             st.subheader("📝 Response")
-            if st.session_state.get('source_youtube_url'):
-                response_text = linkify_timestamps(response_text, st.session_state.source_youtube_url)
-
+            # The model should have already formatted the links, so no helper function is needed.
             st.markdown(response_text, unsafe_allow_html=True)
+
             st.download_button(
                 label="⬇️ Download Full Response",
                 data=response.text,
