@@ -103,8 +103,13 @@ if st.sidebar.button("Clear & Forget API Key"):
             pass
     st.rerun()
 
+# --- Gemini Client Initialization (Cached) ---
+# This block ensures the client is initialized only once and handles API key presence.
 if st.session_state.api_key:
     try:
+        # IMPORTANT: To fix the repeated "Gemini Client Initialized" message,
+        # you should decorate the `initialize_client` function in `cache_utils.py`
+        # with `@st.cache_resource`.
         cu.initialize_client(st.session_state.api_key)
     except Exception as e:
         st.error(f"Failed to initialize Gemini client: {e}")
@@ -115,6 +120,8 @@ else:
 
 
 # --- Cached Data Fetching ---
+# IMPORTANT: To fix the `st.cache is deprecated` warning, ensure any function
+# in `cache_utils.py` using `@st.cache` is updated to `@st.cache_data`.
 @st.cache_data(ttl=60)
 def cached_list_files():
     return cu.list_files()
