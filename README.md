@@ -1,87 +1,177 @@
 
-# Gemini CacheLink
+# 🎥 Gemini API Cache Manager
 
-Gemini CacheLink is a Streamlit-based frontend for managing Google Gemini API file uploads, explicit caching, and content generation.
-It provides an easy-to-use UI to:
-- Upload local files or download from URLs
-- Create explicit caches with TTL and system instructions
-- Query caches for efficient re-use of tokens
-- Manage (list, delete) caches and uploaded files
+🚀 Streamlit-powered UI for creating, managing, and querying caches with Gemini 2.0/2.5 API
+🔗 GSoC 2025 Project Utility — Adds Explicit & Implicit Context Caching, File Uploads, and Token Savings Reports
 
-## 🚀 Features
-- **File Uploads**: Upload audio/video/text files to the Gemini Files API.
-- **Explicit Caching**: Create caches for long-term content re-use and token cost optimization.
-- **Cache Querying**: Run prompts against existing caches for high-speed inference.
-- **File Management**: View and delete uploaded files directly from the UI.
-- **Streamlit Frontend**: Fully interactive web interface.
+---
 
-## 📂 Repository Structure
-```
-gemini_cachelink/
-│── main.py         # Streamlit frontend
-│── .env            # Contains GEMINI_API_KEY
-│── requirements.txt
-│── README.md
-```
+## 📖 Overview
 
-## 🛠️ Installation
+**Gemini API Cache Manager** is an interactive Streamlit app that helps developers, researchers, and AI engineers efficiently manage **context caching** with the Gemini API.
 
-1. **Clone the repo**
+It supports **explicit and implicit caching**, file uploads, text-based context, and provides detailed **usage reports** to optimize token costs.
+
+---
+
+## ✨ Key Features
+
+### 🛠️ Configuration Panel
+
+* Secure API key entry (stored in session state, not persisted)
+* Model selection (`gemini-2.5-flash`, `gemini-2.0-pro`, etc.)
+
+### 💾 Cache Creation
+
+* Create explicit caches from:
+
+  * Uploaded files (TXT, PDF, DOCX, JSON, CSV)
+  * Direct text input
+  * YouTube reference URLs (metadata only)
+* Automatic validation of token size (min 4096 tokens required)
+* Fallback: if content too small → user can switch to **implicit caching**
+
+### 🔍 Query with Cache
+
+* Run single or multiple prompts against:
+
+  * No cache
+  * Explicit cache (`@use_cache`)
+  * Implicit prefix reuse
+* Inline display of answers
+* Export all queries + answers + usage report as **TXT file**
+
+### 📂 File Management
+
+* Upload files for caching or reference
+* Search, refresh, and manage uploaded files
+* Automatic detection of supported formats
+
+### 📊 Reports & Token Savings
+
+* Track input, output, and total tokens
+* Cached vs. billable token breakdown
+* Estimated cost savings from cache hits
+* Exportable report
+
+---
+
+## 🔧 Setup Instructions
+
+1. **Clone the Repo**
+
 ```bash
-git clone https://github.com/vanshksingh/gemini_cachelink.git
-cd gemini_cachelink
+git clone https://github.com/vanshksingh/Gemini_CacheManager.git
+cd Gemini_CacheManager
 ```
 
-2. **Install dependencies**
+2. **Create Virtual Environment**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+3. **Install Dependencies**
+
 ```bash
 pip install -r requirements.txt
 ```
-*(or manually)*
-```bash
-pip install streamlit python-dotenv google-genai requests
+
+4. **Get Your Gemini API Key**
+   👉 [Generate API Key](https://aistudio.google.com/app/apikey)
+
+5. **Configure `.env`**
+
+```env
+GEMINI_API_KEY=your_api_key_here
 ```
 
-3. **Set up environment variables**
-Create a `.env` file in the project root:
+---
+
+## 📂 Repository Structure
+
 ```
-GEMINI_API_KEY=your_gemini_api_key_here
+Gemini_CacheManager/
+├── main.py               # Streamlit app entrypoint (UI + logic)
+├── cache_utils.py        # Explicit/implicit cache helpers
+├── gem_cache.py          # Cache-aware planning logic
+├── requirements.txt      # Python dependencies
+├── README.md             # Documentation
 ```
 
-## ▶️ Usage
+---
 
-Run the Streamlit app:
+## 🧠 Run Modes & Context Options
+
+| Mode         | Description                                                  |
+| ------------ | ------------------------------------------------------------ |
+| **No Cache** | Always send full context (most expensive)                    |
+| **Explicit** | Upload once, guaranteed reuse (up to 75% cheaper)            |
+| **Implicit** | Auto-reuse overlapping prefixes (saves cost, not guaranteed) |
+
+---
+
+## 🔍 Example Usage
+
+**Run the App**
+
 ```bash
 streamlit run main.py
 ```
 
-Open the local URL displayed in the terminal (usually `http://localhost:8501`).
+**Workflow Example**
 
-### 🔹 Uploading Files
-- Upload via file uploader OR provide a direct URL.
-- Files are processed and stored in the Gemini Files API.
+1. Enter API Key and select model (`gemini-2.5-flash`)
+2. Upload a file or paste text to create a cache
+3. Run queries with **explicit cache**
+4. Get structured answers inline
+5. Export all Q\&A + token report as TXT
 
-### 🔹 Creating Explicit Cache
-- Select an uploaded file.
-- Enter system instructions and TTL (time-to-live).
-- Create cache for re-use.
+---
 
-### 🔹 Querying Cache
-- Select an existing cache.
-- Enter a prompt and run the query.
-- View results and usage metadata.
+## 📊 Reports & Exports
 
-### 🔹 Managing Caches & Files
-- List all caches and delete if needed.
-- View and delete uploaded files.
+✅ **Usage Report**
 
-## 📌 Requirements
-- Python 3.9+
-- Google Gemini API key
+* Prompts count
+* Token usage (input/output/total)
+* Cached vs. billable tokens
+* Cost savings from cache
 
-## 📝 Notes
-- Uses `google-genai` official client.
-- Optimized for `gemini-2.0-flash-001` model by default.
-- Explicit cache reduces token cost by up to 75% per hit.
+📜 **Q\&A Export**
 
-## 📜 License
-MIT License © 2025 Vansh K Singh
+* Each query + answer
+* Final usage report at the end
+
+---
+
+## 🛡️ Error Handling
+
+* **Invalid API Key** → guided fix prompt
+* **File too small (< 4096 tokens)** → fallback option to implicit cache
+* **Unconfirmed upload** → "Refresh files list" retry button
+* **Server errors** → safe retry with error display
+
+---
+
+## 🧑‍💻 Contributing
+
+* Fork this repo
+* Create a feature branch: `git checkout -b feature/xyz`
+* Push changes and open a PR 🚀
+
+---
+
+## 📄 License
+
+MIT License © 2025 Vansh Kumar Singh
+
+---
+
+## 🔗 Useful Links
+
+* [Gemini API Docs](https://ai.google.dev/docs)
+* [Google AI Studio](https://aistudio.google.com/)
+* [DeepCache Project (related work)](https://github.com/google-deepmind)
+
