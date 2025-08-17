@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import time
 import pathlib
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Any
 
 import requests
 from dotenv import load_dotenv
@@ -31,14 +31,14 @@ def initialize_client(api_key: Optional[str] = None) -> genai.Client:
     if _CLIENT is not None:
         return _CLIENT
 
-    load_dotenv()  # required
+    load_dotenv()
     key = api_key or os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError(
             "GEMINI_API_KEY is not set. Provide it via .env or pass api_key to initialize_client()."
         )
 
-    _CLIENT = genai.Client(api_key=key)  # required
+    _CLIENT = genai.Client(api_key=key)
     return _CLIENT
 
 
@@ -75,9 +75,7 @@ def estimate_tokens_from_text(text: str) -> int:
 
 
 def min_cache_token_requirement(model_id: str) -> int:
-    """
-    Based on server behavior: explicit caches on -001 models commonly require >= 4096 tokens.
-    """
+    """Explicit caches on -001 models commonly require >= 4096 tokens."""
     mid = model_id.lower()
     if "-001" in mid:
         return 4096
@@ -118,6 +116,24 @@ def list_files() -> list:
     return _safe_iter_list(lambda: client.files.list())
 
 
+def get_file(name: str, retries: int = 3, delay: float = 0.8):
+    """
+    Robust fetch of a single file by name. Returns None on persistent error.
+    """
+    client = initialize_client()
+    last_err: Optional[Exception] = None
+    for _ in range(retries):
+        try:
+            return client.files.get(name=name)
+        except (ServerError, APIError) as e:
+            last_err = e
+            time.sleep(delay)
+        except Exception as e:
+            last_err = e
+            time.sleep(delay)
+    return None
+
+
 def delete_file(name: str):
     client = initialize_client()
     return client.files.delete(name=name)
@@ -139,9 +155,32 @@ def download_file(url: str, dest_path: Union[str, pathlib.Path]) -> pathlib.Path
 # -----------------------
 # Explicit Cache API
 # -----------------------
+def _normalize_contents_for_cache(contents: List[Union[str, Any]]) -> List[Union[str, Any]]:
+    """
+    Accepts:
+      - text strings
+      - File objects from Files API
+      - dict sentinel like {"name": "..."} saved from upload step
+    Tries to resolve dict sentinel into a real File object via get_file().
+    """
+    normalized: List[Union[str, Any]] = []
+    for item in contents:
+        if isinstance(item, str):
+            normalized.append(item)
+        elif isinstance(item, dict) and "name" in item:
+            f = get_file(item["name"])
+            if f is not None:
+                normalized.append(f)
+            # if still None, skip — caller should handle empty results
+        else:
+            # assume it's a File object already
+            normalized.append(item)
+    return normalized
+
+
 def create_explicit_cache(
     model_id: str,
-    contents: List[Union[str, object]],
+    contents: List[Union[str, Any]],
     system_instruction: str,
     ttl_seconds: int,
     display_name: str,
@@ -153,6 +192,10 @@ def create_explicit_cache(
     """
     client = initialize_client()
     ttl_str = f"{int(ttl_seconds)}s"
+
+    contents = _normalize_contents_for_cache(contents)
+    if not contents:
+        raise ValueError("No valid cache contents resolved. Please refresh files list and try again.")
 
     config = types.CreateCachedContentConfig(
         display_name=display_name,

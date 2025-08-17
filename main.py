@@ -4,9 +4,10 @@
 # - Uses google.genai (new client)
 # - Correct .env usage via cache_utils.initialize_client()
 # - Modular, no argparse
-# - Asks to switch to Implicit if explicit cache is too small
-# - Remembers "last uploaded file" so Step 2 detects it even if listing hiccups
-# - Adds manual Refresh buttons for lists
+# - If explicit cache would be too small, offer to switch to Implicit (your request)
+# - Fix: Step 2 now detects the uploaded file even when listing is flaky,
+#        by resolving the last upload via Files.get(name=...) with retries.
+# - Manual Refresh buttons for lists
 # - Exports per-query responses + combined export
 # ----------------------------------------------------
 from __future__ import annotations
@@ -32,7 +33,7 @@ def initialize_session_state():
     if "last_query_responses" not in st.session_state:
         st.session_state.last_query_responses: List[Tuple[str, object, str]] = []
     if "last_uploaded_file" not in st.session_state:
-        # store minimal info to reference in Step 2 without relying on list()
+        # minimal info to reference in Step 2 without relying solely on list()
         st.session_state.last_uploaded_file: Optional[dict] = None
     if "default_query_mode" not in st.session_state:
         st.session_state.default_query_mode = "Explicit Cache"  # or "Implicit (system+prompt only)"
@@ -100,7 +101,14 @@ def page_upload_file():
 
     file_upload = st.file_uploader(
         "Upload a file from your device",
-        type=["mp4", "mp3", "pdf", "jpg", "png", "jpeg", "wav", "mkv"],
+        type=[
+            # docs
+            "txt", "md", "pdf", "docx", "pptx", "csv", "tsv", "json", "jsonl",
+            # images
+            "png", "jpg", "jpeg", "gif",
+            # audio/video
+            "mp3", "wav", "mp4", "mkv",
+        ],
     )
     url_input = st.text_input("Or enter a file/YouTube URL")
 
@@ -180,46 +188,54 @@ def page_create_cache(model_id: str):
     text_preview_for_estimate = ""
 
     if cache_content_source == "From Uploaded File":
-        # First, offer the most recent upload (works even if list() is flaky)
+        # Prefer the most recent upload (works even if list() is flaky)
         last = st.session_state.get("last_uploaded_file")
+        used_last = False
         if last:
             use_last = st.checkbox(
                 f"Use most recent upload: {last.get('display_name') or last.get('name')}",
                 value=True,
             )
-        else:
-            use_last = False
-            st.caption("No recent upload remembered in this session.")
+            if use_last:
+                # pass sentinel dict; cache_utils will resolve via Files.get()
+                content_to_cache = [last]
+                used_last = True
+                st.success("Using most recent uploaded file for caching.")
 
-        # Also allow picking from library
         st.subheader("Or pick from your uploaded files")
-        col_a, col_b = st.columns([1, 1], vertical_alignment="center")
+        col_a, _ = st.columns([1, 1], vertical_alignment="center")
         with col_a:
             if st.button("🔄 Refresh files list"):
                 cached_list_files.clear()
         files = cached_list_files()
 
-        if use_last and last:
-            content_to_cache = [last]  # we can pass this sentinel and normalize later
-            st.success("Using most recent uploaded file for caching.")
-        elif files:
-            def _label(f):
-                disp = getattr(f, "display_name", None) or getattr(f, "name", "file")
-                return f"{disp} ({getattr(f, 'name', 'n/a')})"
+        if not used_last:
+            if files:
+                def _label(f):
+                    disp = getattr(f, "display_name", None) or getattr(f, "name", "file")
+                    return f"{disp} ({getattr(f, 'name', 'n/a')})"
 
-            file_map = {_label(f): f for f in files}
-            selected_file_display = st.selectbox("Select File to Cache", list(file_map.keys()))
-            if selected_file_display:
-                content_to_cache = [file_map[selected_file_display]]
-        else:
-            st.warning("No files found. Please go back to Step 1 to upload a file, then click Refresh.")
+                file_map = {_label(f): f for f in files}
+                selected_file_display = st.selectbox("Select File to Cache", list(file_map.keys()))
+                if selected_file_display:
+                    content_to_cache = [file_map[selected_file_display]]
+            else:
+                st.warning("No files found. Please go back to Step 1 to upload a file, then click Refresh.")
 
     elif cache_content_source == "From Text Input":
         text_content = st.text_area("Enter text content to cache:", height=220, placeholder="Paste large context here...")
         if text_content:
             content_to_cache = [text_content]
             text_preview_for_estimate = text_content
-            _token_hint_box(model_id, text_preview_for_estimate)
+            if not _token_hint_box(model_id, text_preview_for_estimate):
+                st.error("Content appears below the minimum token requirement for explicit caching on this model.")
+                choice = st.radio(
+                    "Switch to Implicit mode instead?",
+                    ("Yes, use Implicit", "No, I'll provide more text"),
+                    horizontal=True,
+                )
+                if choice == "Yes, use Implicit" and st.button("Proceed to Implicit Queries"):
+                    _switch_to_implicit_and_go_to_queries()
 
     else:
         yt = st.session_state.get("source_youtube_url")
@@ -273,7 +289,6 @@ def page_create_cache(model_id: str):
         if not _token_hint_box(model_id, text_preview_for_estimate or ""):
             eligible = False
             # Ask to switch to implicit here too
-            st.error("Content is below the minimum token requirement for explicit caching on this model.")
             switch_choice = st.radio(
                 "Switch to Implicit mode instead?",
                 ("Yes, use Implicit", "No, I'll provide more text"),
@@ -281,20 +296,6 @@ def page_create_cache(model_id: str):
             )
             if switch_choice == "Yes, use Implicit" and st.button("Proceed to Implicit Queries"):
                 _switch_to_implicit_and_go_to_queries()
-
-    # Normalize "last uploaded sentinel" into a minimal File-like for API
-    if eligible and isinstance(content_to_cache[0], dict) and content_to_cache[0].get("name"):
-        # For caches.create, the Files object can be passed directly; however we only have metadata.
-        # The API accepts lightweight references in 'contents' as file objects returned by upload().
-        # To be safe, we fallback to listing and matching by name here.
-        files = cached_list_files()
-        match = next((f for f in files if getattr(f, "name", None) == content_to_cache[0]["name"]), None)
-        if match:
-            content_to_cache = [match]
-        else:
-            # If listing is empty due to transient error, block create (avoid 400)
-            st.warning("Could not confirm the recent upload in listing. Click 'Refresh files list' above and try again.")
-            eligible = False
 
     create_disabled = not eligible
     if st.button("Create Cache", disabled=create_disabled):
@@ -305,6 +306,11 @@ def page_create_cache(model_id: str):
                 cached_list_caches.clear()
             except Exception as e:
                 st.error(f"Failed to create cache: {e}")
+                # If failure looks like "content too small", offer switch to implicit
+                if "min_total_token_count" in str(e) or "too small" in str(e).lower():
+                    st.warning("This content is too small for explicit caching.")
+                    if st.button("Switch to Implicit and go to queries"):
+                        _switch_to_implicit_and_go_to_queries()
 
 
 def page_query_cache(model_id: str):
@@ -333,7 +339,7 @@ def page_query_cache(model_id: str):
     multi_query_text = st.text_area("Queries", default_prompts, height=140)
 
     if query_mode == "Explicit Cache":
-        col_a, col_b = st.columns([1, 1], vertical_alignment="center")
+        col_a, _ = st.columns([1, 1], vertical_alignment="center")
         with col_a:
             if st.button("🔄 Refresh caches list"):
                 cached_list_caches.clear()
@@ -435,7 +441,7 @@ def page_query_cache(model_id: str):
 def page_manage_caches():
     st.header("🗂️ Step 4: Manage Caches")
 
-    col_a, col_b = st.columns([1, 1], vertical_alignment="center")
+    col_a, _ = st.columns([1, 1], vertical_alignment="center")
     with col_a:
         if st.button("🔄 Refresh caches"):
             cached_list_caches.clear()
@@ -482,7 +488,7 @@ def page_manage_caches():
 def page_manage_files():
     st.header("📂 Step 5: Manage Files")
 
-    col_a, col_b = st.columns([1, 1], vertical_alignment="center")
+    col_a, _ = st.columns([1, 1], vertical_alignment="center")
     with col_a:
         if st.button("🔄 Refresh files"):
             cached_list_files.clear()
