@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import time
 import pathlib
-from typing import List, Union, Optional, Iterable, Any, Tuple
+from typing import List, Union, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -31,14 +31,14 @@ def initialize_client(api_key: Optional[str] = None) -> genai.Client:
     if _CLIENT is not None:
         return _CLIENT
 
-    load_dotenv()  # required by user
+    load_dotenv()  # required
     key = api_key or os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError(
             "GEMINI_API_KEY is not set. Provide it via .env or pass api_key to initialize_client()."
         )
 
-    _CLIENT = genai.Client(api_key=key)  # required by user
+    _CLIENT = genai.Client(api_key=key)  # required
     return _CLIENT
 
 
@@ -54,43 +54,33 @@ def _safe_iter_list(fn, *, retries: int = 2, sleep: float = 0.7) -> list:
         try:
             it = fn()
             return list(it)
-        except ServerError as e:
-            # 5xx → retry a couple times, then degrade to []
+        except ServerError:
             if attempt < retries:
                 time.sleep(sleep)
                 continue
             return []
         except APIError:
-            # 4xx → return empty instead of crashing UI list views
             return []
         except Exception:
-            # Any unexpected conversion/JSON parse problems → empty
             return []
     return []
 
 
 def estimate_tokens_from_text(text: str) -> int:
-    """
-    Quick-n-dirty token estimate. Gemini tokens are byte-pair-ish; ~4 chars/token
-    is a conservative heuristic.
-    """
+    """Rough token estimate (~4 chars/token)."""
     if not text:
         return 0
-    # strip to avoid counting lots of whitespace
     s = " ".join(text.split())
     return max(1, int(len(s) / 4))
 
 
 def min_cache_token_requirement(model_id: str) -> int:
     """
-    Empirical map based on current server responses. Your error showed 4096 as min.
-    We default to 4096 for explicit caches on -001 models.
+    Based on server behavior: explicit caches on -001 models commonly require >= 4096 tokens.
     """
     mid = model_id.lower()
-    # Keep room to tweak if Google adjusts thresholds per model
     if "-001" in mid:
         return 4096
-    # Fallback
     return 4096
 
 
@@ -118,7 +108,6 @@ def upload_file(path: Union[str, pathlib.Path]):
             f = client.files.get(name=name)
             state = getattr(f, "state", None)
     except Exception:
-        # If schema or state behavior changes, just return object as-is
         pass
 
     return f
@@ -131,7 +120,6 @@ def list_files() -> list:
 
 def delete_file(name: str):
     client = initialize_client()
-    # Use keyword to avoid "takes 1 positional argument" confusion
     return client.files.delete(name=name)
 
 
@@ -195,9 +183,6 @@ def update_cache_ttl(name: str, ttl_seconds: int):
 
 
 def update_cache_expire_time(name: str, expire_dt_iso: str):
-    """
-    expire_dt_iso must be timezone-aware ISO string, e.g. '2025-01-27T16:02:36+00:00'
-    """
     client = initialize_client()
     return client.caches.update(
         name=name,
@@ -207,7 +192,6 @@ def update_cache_expire_time(name: str, expire_dt_iso: str):
 
 def delete_cache(name: str):
     client = initialize_client()
-    # Use keyword; older client shims can misinterpret positional args here
     return client.caches.delete(name=name)
 
 
@@ -215,9 +199,6 @@ def delete_cache(name: str):
 # Generation Helpers
 # -----------------------
 def generate_from_cache(model_id: str, cache_name: str, prompt: str):
-    """
-    Generate with an explicit cache. Requires model with explicit version suffix '-001'.
-    """
     client = initialize_client()
     resp = client.models.generate_content(
         model=model_id,
@@ -228,9 +209,6 @@ def generate_from_cache(model_id: str, cache_name: str, prompt: str):
 
 
 def generate_with_implicit_cache(model_id: str, system_instruction: str, prompt: str):
-    """
-    Generate with only system + prompt. On 2.5 models, implicit caching may reduce costs.
-    """
     client = initialize_client()
     resp = client.models.generate_content(
         model=model_id,
