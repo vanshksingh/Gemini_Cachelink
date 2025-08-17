@@ -1,132 +1,240 @@
 # cache_utils.py
+# ---------------------------------------
+# Utilities for Gemini Files + Explicit/Implicit Caching
+# Uses the *new* google.genai client
+# ---------------------------------------
+from __future__ import annotations
+
+import os
 import time
 import pathlib
-import datetime
-import requests
-from typing import Union, List, Any
+from typing import List, Union, Optional, Iterable, Any, Tuple
 
+import requests
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-
-# Global client variable, to be initialized by the main app
-client = None
+from google.genai.errors import APIError, ServerError
 
 
-def initialize_client(api_key: str):
+_CLIENT: Optional[genai.Client] = None
+
+
+def initialize_client(api_key: Optional[str] = None) -> genai.Client:
     """
-    Initializes the global client with the provided API key.
-    This MUST be called before any other function in this module.
+    Initialize and memoize a google.genai Client. Preference order:
+    1) Explicit api_key argument
+    2) .env -> GEMINI_API_KEY (via load_dotenv)
+    3) Environment (already exported in shell)
     """
-    global client
-    if not api_key:
-        raise ValueError("API key cannot be empty.")
-    client = genai.Client(api_key=api_key)
-    print("Gemini Client Initialized in cache_utils.")
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
 
-
-# === FILE UTILITIES ===
-def download_file(url: str, dest_path: Union[str, pathlib.Path]) -> pathlib.Path:
-    """Downloads a file from `url` to `dest_path` if it does not already exist."""
-    path = pathlib.Path(dest_path)
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('wb') as wf:
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            for chunk in response.iter_content(chunk_size=8192):
-                wf.write(chunk)
-    return path
-
-
-def upload_file(path: Union[str, pathlib.Path]) -> Any:
-    """
-    Upload a file to Gemini Files API and wait until processing is complete.
-    This is a blocking operation.
-    """
-    if not client:
-        raise RuntimeError("Client not initialized.")
-    file_obj = client.files.upload(file=pathlib.Path(path))
-    while file_obj.state.name == 'PROCESSING':
-        print('Waiting for file to be processed...')
-        time.sleep(2)
-        file_obj = client.files.get(name=file_obj.name)
-    return file_obj
-
-
-# === CACHE UTILITIES ===
-def create_explicit_cache(model: str, contents: List[Any], system_instruction: str, ttl_seconds: int,
-                          display_name: str) -> Any:
-    """Creates an explicit cache."""
-    if not client:
-        raise RuntimeError("Client not initialized.")
-
-    ttl_string = f"{ttl_seconds}s"
-
-    cache = client.caches.create(
-        model=model,
-        config=types.CreateCachedContentConfig(
-            display_name=display_name,
-            system_instruction=system_instruction,
-            contents=contents,
-            ttl=ttl_string
+    load_dotenv()  # required by user
+    key = api_key or os.getenv("GEMINI_API_KEY")
+    if not key:
+        raise ValueError(
+            "GEMINI_API_KEY is not set. Provide it via .env or pass api_key to initialize_client()."
         )
+
+    _CLIENT = genai.Client(api_key=key)  # required by user
+    return _CLIENT
+
+
+# -----------------------
+# Helpers
+# -----------------------
+def _safe_iter_list(fn, *, retries: int = 2, sleep: float = 0.7) -> list:
+    """
+    Call a list() endpoint that yields an iterator. Swallow transient 5xx issues
+    and return [] so UI doesn't crash. Never raises to Streamlit layer.
+    """
+    for attempt in range(retries + 1):
+        try:
+            it = fn()
+            return list(it)
+        except ServerError as e:
+            # 5xx → retry a couple times, then degrade to []
+            if attempt < retries:
+                time.sleep(sleep)
+                continue
+            return []
+        except APIError:
+            # 4xx → return empty instead of crashing UI list views
+            return []
+        except Exception:
+            # Any unexpected conversion/JSON parse problems → empty
+            return []
+    return []
+
+
+def estimate_tokens_from_text(text: str) -> int:
+    """
+    Quick-n-dirty token estimate. Gemini tokens are byte-pair-ish; ~4 chars/token
+    is a conservative heuristic.
+    """
+    if not text:
+        return 0
+    # strip to avoid counting lots of whitespace
+    s = " ".join(text.split())
+    return max(1, int(len(s) / 4))
+
+
+def min_cache_token_requirement(model_id: str) -> int:
+    """
+    Empirical map based on current server responses. Your error showed 4096 as min.
+    We default to 4096 for explicit caches on -001 models.
+    """
+    mid = model_id.lower()
+    # Keep room to tweak if Google adjusts thresholds per model
+    if "-001" in mid:
+        return 4096
+    # Fallback
+    return 4096
+
+
+# -----------------------
+# Files API
+# -----------------------
+def upload_file(path: Union[str, pathlib.Path]):
+    """
+    Upload a file using Files API and wait until it's processed (if applicable).
+    Returns the File object.
+    """
+    client = initialize_client()
+    path = pathlib.Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Path does not exist: {path}")
+
+    f = client.files.upload(file=str(path))
+
+    # Wait for processing for video/pdf etc.
+    try:
+        state = getattr(f, "state", None)
+        name = getattr(f, "name", None)
+        while hasattr(state, "name") and state.name == "PROCESSING":
+            time.sleep(2)
+            f = client.files.get(name=name)
+            state = getattr(f, "state", None)
+    except Exception:
+        # If schema or state behavior changes, just return object as-is
+        pass
+
+    return f
+
+
+def list_files() -> list:
+    client = initialize_client()
+    return _safe_iter_list(lambda: client.files.list())
+
+
+def delete_file(name: str):
+    client = initialize_client()
+    # Use keyword to avoid "takes 1 positional argument" confusion
+    return client.files.delete(name=name)
+
+
+def download_file(url: str, dest_path: Union[str, pathlib.Path]) -> pathlib.Path:
+    dest_path = pathlib.Path(dest_path)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with requests.get(url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(dest_path, "wb") as wf:
+            for chunk in r.iter_content(chunk_size=32768):
+                if chunk:
+                    wf.write(chunk)
+    return dest_path
+
+
+# -----------------------
+# Explicit Cache API
+# -----------------------
+def create_explicit_cache(
+    model_id: str,
+    contents: List[Union[str, object]],
+    system_instruction: str,
+    ttl_seconds: int,
+    display_name: str,
+):
+    """
+    Create a cache with given contents and system_instruction.
+    - contents can be strings and/or File objects returned from Files API.
+    - ttl must be a string per API ("300s"), we convert from int seconds.
+    """
+    client = initialize_client()
+    ttl_str = f"{int(ttl_seconds)}s"
+
+    config = types.CreateCachedContentConfig(
+        display_name=display_name,
+        system_instruction=system_instruction,
+        contents=contents,
+        ttl=ttl_str,
     )
+    cache = client.caches.create(model=model_id, config=config)
     return cache
 
 
-def generate_from_cache(model: str, cache_name: str, prompt: str) -> Any:
-    """Generates content from an existing cache."""
-    if not client:
-        raise RuntimeError("Client not initialized.")
-    response = client.models.generate_content(
-        model=model,
-        contents=[prompt],
-        config=types.GenerateContentConfig(cached_content=cache_name)
-    )
-    return response
+def list_caches() -> list:
+    client = initialize_client()
+    return _safe_iter_list(lambda: client.caches.list())
 
 
-def list_caches() -> List[Any]:
-    """Lists metadata for all caches."""
-    if not client:
-        raise RuntimeError("Client not initialized.")
-    return list(client.caches.list())
-
-
-def get_cache_metadata(name: str) -> Any:
-    """Retrieves metadata for a single cache by name."""
-    if not client:
-        raise RuntimeError("Client not initialized.")
+def get_cache(name: str):
+    client = initialize_client()
     return client.caches.get(name=name)
 
 
-def update_cache_ttl(name: str, ttl_seconds: int) -> Any:
-    """Updates the TTL for a specific cache."""
-    if not client:
-        raise RuntimeError("Client not initialized.")
+def update_cache_ttl(name: str, ttl_seconds: int):
+    client = initialize_client()
     return client.caches.update(
         name=name,
-        config=types.UpdateCachedContentConfig(ttl=f"{ttl_seconds}s")
+        config=types.UpdateCachedContentConfig(ttl=f"{int(ttl_seconds)}s"),
     )
 
 
-def delete_cache(name: str) -> None:
-    """Deletes a cache by name."""
-    if not client:
-        raise RuntimeError("Client not initialized.")
-    client.caches.delete(name=name)
+def update_cache_expire_time(name: str, expire_dt_iso: str):
+    """
+    expire_dt_iso must be timezone-aware ISO string, e.g. '2025-01-27T16:02:36+00:00'
+    """
+    client = initialize_client()
+    return client.caches.update(
+        name=name,
+        config=types.UpdateCachedContentConfig(expire_time=expire_dt_iso),
+    )
 
 
-# === FILE METADATA UTILITIES ===
-def list_files() -> List[Any]:
-    """Lists all uploaded files."""
-    if not client:
-        raise RuntimeError("Client not initialized.")
-    return list(client.files.list())
+def delete_cache(name: str):
+    client = initialize_client()
+    # Use keyword; older client shims can misinterpret positional args here
+    return client.caches.delete(name=name)
 
 
-def delete_file(file_name: str) -> None:
-    """Deletes an uploaded file by name."""
-    if not client:
-        raise RuntimeError("Client not initialized.")
-    client.files.delete(name=file_name)
+# -----------------------
+# Generation Helpers
+# -----------------------
+def generate_from_cache(model_id: str, cache_name: str, prompt: str):
+    """
+    Generate with an explicit cache. Requires model with explicit version suffix '-001'.
+    """
+    client = initialize_client()
+    resp = client.models.generate_content(
+        model=model_id,
+        contents=prompt,
+        config=types.GenerateContentConfig(cached_content=cache_name),
+    )
+    return resp
+
+
+def generate_with_implicit_cache(model_id: str, system_instruction: str, prompt: str):
+    """
+    Generate with only system + prompt. On 2.5 models, implicit caching may reduce costs.
+    """
+    client = initialize_client()
+    resp = client.models.generate_content(
+        model=model_id,
+        contents=prompt,
+        config=types.GenerateContentConfig(system_instruction=system_instruction),
+    )
+    return resp
