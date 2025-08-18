@@ -1,0 +1,6 @@
+pathlib~=1.0.1
+streamlit~=1.39.0
+typing~=3.7.4.3
+requests~=2.32.3
+python-dotenv~=1.0.1
+protobuf~=5.29.4
