@@ -209,17 +209,20 @@ def test_initialize_client_explicit_key_overrides_env(monkeypatch, patch_client)
 
 def test_initialize_client_raises_when_missing_key(monkeypatch):
     """
-    Make this test robust even if a real .env exists in the repo.
-    We:
-      - clear os.environ completely
-      - stub load_dotenv() to NO-OP
-      - ensure memo is clear
+    Robust even if a real .env exists or an autouse fixture sets the key.
+
+    Steps:
+      - Clear the memoized client
+      - Remove GEMINI_API_KEY from the environment
+      - Stub load_dotenv() so it can't repopulate from a .env file
+      - Expect ValueError from initialize_client()
     """
     cu._CLIENT = None
-    monkeypatch.dict(os.environ, {}, clear=True)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr(cu, "load_dotenv", lambda: None)
     with pytest.raises(ValueError):
         cu.initialize_client()
+
 
 
 # -----------------------------
