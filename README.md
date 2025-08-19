@@ -1,7 +1,7 @@
 
 # 🎥 Gemini API Cache Manager
 
-<img width="240" height="135" alt="Copy of Copy of Copy of remixed" src="https://github.com/user-attachments/assets/f10a7139-d086-4a17-9dd4-9f1bc8614bf4" />
+<img width="1199" height="674" alt="Screenshot 2025-08-19 at 8 59 31 PM" src="https://github.com/user-attachments/assets/7816f809-5848-4761-a5f0-4cd223e56025" />
 
 🚀 Streamlit-powered UI for creating, managing, and querying caches with Gemini 2.0/2.5 API
 🔗 GSoC 2025 Project Utility — Adds Explicit & Implicit Context Caching, File Uploads, and Token Savings Reports
