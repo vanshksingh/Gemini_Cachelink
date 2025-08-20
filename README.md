@@ -7,6 +7,9 @@
 🔗 GSoC 2025 Project Utility — Adds Explicit & Implicit Context Caching, File Uploads, and Token Savings Reports
 
 ---
+## ⚠️ Known API issue:
+In free tier of Gemini API Explicit cache is not functioning, it is being internally escalated for a fix at the moment.
+---
 
 ## 📖 Overview
 
