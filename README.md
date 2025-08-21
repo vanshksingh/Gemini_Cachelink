@@ -1,4 +1,3 @@
-
 # 🎥 Gemini API Cache Manager
 
 <img width="1199" height="674" alt="Screenshot 2025-08-19 at 8 59 31 PM" src="https://github.com/user-attachments/assets/7816f809-5848-4761-a5f0-4cd223e56025" />
