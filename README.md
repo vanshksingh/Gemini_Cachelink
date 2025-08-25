@@ -60,6 +60,23 @@ It supports **explicit and implicit caching**, file uploads, text-based context,
 
 ---
 
+## 🖥️ UI & Screenshots
+
+### 1. Main Homepage
+<img width="1352" height="1142" alt="Screenshot 2025-08-25 at 6 46 06 AM" src="https://github.com/user-attachments/assets/456c4713-b6de-4f99-8aef-20dec3ca7ec4" />
+
+
+### 2. Cache Creation Page
+<img width="1352" height="1142" alt="Screenshot 2025-08-25 at 6 46 28 AM" src="https://github.com/user-attachments/assets/68deea79-ec3c-417c-8d97-4741592a1213" />
+
+
+### 3. More Screenshots
+Additional screenshots (Query page, Cache/File management, Reports, etc.) are available in the  
+[`/screenshots`](./screenshots) folder.
+
+---
+
+
 ## 🔧 Setup Instructions
 
 1. **Clone the Repo**
