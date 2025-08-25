@@ -72,7 +72,7 @@ It supports **explicit and implicit caching**, file uploads, text-based context,
 
 ### 3. More Screenshots
 Additional screenshots (Query page, Cache/File management, Reports, etc.) are available in the  
-[`/screenshots`](./screenshots) folder.
+[`/Screenshots`](./Screenshots) folder.
 
 ---
 
